@@ -5,6 +5,11 @@ name: .NET
 
 on:
   workflow_dispatch:
+  
+permissions:
+  id-token: write
+
+
 
 jobs:
   build:
@@ -12,6 +17,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Login to Azure
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    
     - uses: actions/checkout@v4
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
@@ -23,8 +35,29 @@ jobs:
       run: dotnet build --no-restore
     - name: Test
       run: dotnet test --no-build --verbosity normal
+    - name: Get Latest Container Image Tag
+      id: get_tag
+      run: |
+          TAG=$(az acr repository show-tags --name microhackregistryuser1 --repository microhackappuser1 --orderby time_desc --output tsv --detail | head -n 1 | awk '{print $4}')
+          NUMERIC_TAG=$(echo "$TAG" | grep -oE '[0-9]+')
+          INCREMENTED_TAG=$((NUMERIC_TAG + 1))
+          UPDATED_TAG=$(echo "$TAG" | sed "s/$NUMERIC_TAG/$INCREMENTED_TAG/")
+          echo "image_tag=$UPDATED_TAG" >> $GITHUB_OUTPUT
     - name: Build and Push Image
       run: |
         az acr login --name microhackregistryuser1 --username ${{ secrets.ACR_USERNAME }} --password ${{ secrets.ACR_PASSWORD }} &&
-        docker build -t microhackregistryuser1.azurecr.io/microhackappuser1:1 -f Dockerfile . &&
-        docker push microhackregistryuser1.azurecr.io/microhackappuser1:1
+
+        docker build -t microhackregistryuser1.azurecr.io/microhackappuser1:${{ steps.get_tag.outputs.image_tag }} -f Dockerfile . &&
+        docker push microhackregistryuser1.azurecr.io/microhackappuser1:${{ steps.get_tag.outputs.image_tag }}
+
+
+    - name: Deploy to Container App
+      uses: azure/container-apps-deploy-action@v2
+      with:
+        imageToDeploy: microhackregistryuser1.azurecr.io/microhackappuser1:${{ steps.get_tag.outputs.image_tag }}
+        acrUsername: ${{ secrets.ACR_USERNAME }}
+        acrPassword: ${{ secrets.ACR_PASSWORD }}
+        resourceGroup: user1
+        containerAppEnvironment: microhack-containerappenvironment
+        containerAppName: microhack-containerapp
+        targetPort: 8080
